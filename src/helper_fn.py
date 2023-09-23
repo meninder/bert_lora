@@ -23,8 +23,10 @@ def get_dataset(tokenizer:BertTokenizer,
     dataset = load_dataset(dataset_name)
     if cap_rows:
         logger.info(f"Capping dataset rows to {cap_rows_train} train and {cap_rows_test} test")
-        train_dataset = dataset["train"].select(range(cap_rows_train))
-        test_dataset = dataset["test"].select(range(cap_rows_test))
+        train_dataset = dataset["train"]
+        train_dataset = train_dataset.select(np.random.randint(0, len(train_dataset), cap_rows_train))
+        test_dataset = dataset["test"]
+        test_dataset = test_dataset.select(np.random.randint(0, len(test_dataset), cap_rows_test))
 
     train_dataset_tokenized = train_dataset.map(
         lambda examples: tokenizer(examples["text"], truncation=True, padding="max_length")
@@ -141,7 +143,7 @@ def get_trainer(fine_tuning_name:str, # change to choice
     train_dataset, test_dataset = get_dataset(tokenizer, cap_rows=cap_rows, cap_rows_train=cap_rows_train, cap_rows_test=cap_rows_test)
     
     eval_steps = int(epochs * len(train_dataset) // batch_size / 5 ) # evaluate 5 times 
-    logger.info(f'eval_steps: {eval_steps}')
+    logger.info(f'Calculated eval_steps (not using): {eval_steps}')
 
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -152,8 +154,8 @@ def get_trainer(fine_tuning_name:str, # change to choice
         learning_rate=5e-5,
         warmup_ratio=0.1,
         evaluation_strategy="steps",
-        save_steps=30,
-        eval_steps=30,
+        save_steps=800,
+        eval_steps=400,
         save_total_limit=1,
         use_mps_device= device=='mps',
         logging_dir=output_dir + '/logs',
