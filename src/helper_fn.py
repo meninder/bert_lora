@@ -36,6 +36,8 @@ def get_dataset(tokenizer:BertTokenizer,
             , batched=True)
 
     logger.info(f"Train shape: {train_dataset.shape}, Test shape: {test_dataset.shape}")
+    train_dataset_tokenized=train_dataset_tokenized.with_format("torch", )
+    test_dataset_tokenized=test_dataset_tokenized.with_format("torch", )
 
     return train_dataset_tokenized, test_dataset_tokenized
 
