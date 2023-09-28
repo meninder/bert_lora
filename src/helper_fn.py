@@ -50,7 +50,7 @@ def get_dataloader(train_dataset, test_dataset, batch_size=16):
     return train_dataloader, test_dataloader
 
 
-def get_model_for_training(fine_tuning:str):
+def get_model_for_training(fine_tuning:str, lora_layers:list=None):
     
     choices = ['none', 'full', 'top', 'top2', 'lora', 'classifier']
     assert fine_tuning in choices, "fine_tuning variable must be one of the following: {choices}"
@@ -108,6 +108,7 @@ def get_model_for_training(fine_tuning:str):
             r=4,
             lora_alpha=1,
             lora_dropout=0.1,
+            layers_to_transform=lora_layers,
         )
         model = get_peft_model(model, lora_config)
         logger.info(f"Training LoRA")
@@ -135,17 +136,32 @@ def compute_metrics(eval_pred):
 
 def get_trainer(fine_tuning_name:str, # change to choice
                 output_dir:str, # change to path
-                epochs=1, 
+                epochs=2, 
                 batch_size=16, 
                 device='mps', 
                 cap_rows=True,
                 cap_rows_train=10_000,
-                cap_rows_test=2_000):
-    model, tokenizer = get_model_for_training(fine_tuning=fine_tuning_name)
-    train_dataset, test_dataset = get_dataset(tokenizer, cap_rows=cap_rows, cap_rows_train=cap_rows_train, cap_rows_test=cap_rows_test)
+                cap_rows_test=2_000,
+                run_name='default',
+                optim='adamw_torch',
+                grad_acc_steps=1,
+                grad_chkpt=False,
+                fp16_bool=False,
+                lora_layers=None):
     
-    eval_steps = int(epochs * len(train_dataset) // batch_size / 5 ) # evaluate 5 times 
-    logger.info(f'Calculated eval_steps (not using): {eval_steps}')
+    logger.info('*****Getting Model and Tokenizer*****')
+    model, tokenizer = get_model_for_training(fine_tuning=fine_tuning_name, lora_layers=lora_layers)
+    logger.info('*****Getting Dataset*****')
+    train_dataset, test_dataset = get_dataset(tokenizer, cap_rows=cap_rows, cap_rows_train=cap_rows_train, 
+    cap_rows_test=cap_rows_test)
+    
+    eval_steps = int(epochs * len(train_dataset) // batch_size / 4 ) 
+    logger.info(f'Calculated eval_steps: {eval_steps}')
+
+    if hasattr(model, "enable_input_require_grads"):
+        logger.info(f"*****Model input require grads enabled*****")
+        model.enable_input_require_grads()
+        
 
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -156,13 +172,18 @@ def get_trainer(fine_tuning_name:str, # change to choice
         learning_rate=5e-5,
         warmup_ratio=0.1,
         evaluation_strategy="steps",
-        save_steps=800,
-        eval_steps=400,
+        save_strategy="no",
+        #save_steps=800,
+        eval_steps=eval_steps,
         save_total_limit=1,
         use_mps_device= device=='mps',
         logging_dir=output_dir + '/logs',
         report_to='wandb',
-        run_name=f'{fine_tuning_name}_{epochs}_{cap_rows_train}_{cap_rows_test}'
+        run_name=run_name,
+        optim=optim,
+        gradient_accumulation_steps=grad_acc_steps,
+        gradient_checkpointing=grad_chkpt,
+        fp16=fp16_bool
         )
 
     trainer = Trainer(
