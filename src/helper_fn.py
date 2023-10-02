@@ -1,10 +1,10 @@
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from src.logger import logger
-import re
+from typing import Optional, Tuple
 
 
-from transformers import BertForSequenceClassification, BertTokenizer
+from transformers import BertForSequenceClassification, BertTokenizer, PreTrainedModel
 from transformers import TrainingArguments, Trainer
 from peft import LoraConfig, TaskType, get_peft_model
 import evaluate
@@ -22,6 +22,7 @@ def get_dataset(tokenizer:BertTokenizer,
     
     dataset = load_dataset(dataset_name)
     if cap_rows:
+        np.random.seed(42)
         logger.info(f"Capping dataset rows to {cap_rows_train} train and {cap_rows_test} test")
         train_dataset = dataset["train"]
         train_dataset = train_dataset.select(np.random.randint(0, len(train_dataset), cap_rows_train))
@@ -134,21 +135,43 @@ def compute_metrics(eval_pred):
     return metric
 
 
-def get_trainer(fine_tuning_name:str, # change to choice
-                output_dir:str, # change to path
-                epochs=2, 
-                batch_size=16, 
-                device='mps', 
-                cap_rows=True,
-                cap_rows_train=10_000,
-                cap_rows_test=2_000,
-                run_name='default',
-                optim='adamw_torch',
-                grad_acc_steps=1,
-                grad_chkpt=False,
-                fp16_bool=False,
-                lora_layers=None):
-    
+def get_trainer(fine_tuning_name: str, 
+                output_dir: str, 
+                epochs: int = 2, 
+                batch_size: int = 16, 
+                device: str = 'mps', 
+                cap_rows: bool = True,
+                cap_rows_train: int = 10_000,
+                cap_rows_test: int = 2_000,
+                run_name: str = 'default',
+                optim: str = 'adamw_torch',
+                grad_acc_steps: int = 1,
+                grad_chkpt: bool = False,
+                fp16_bool: bool = False,
+                lora_layers: Optional[list] = None) ->Trainer:
+    """
+    Returns a Trainer instance and a pre-trained model for fine-tuning on a dataset.
+
+    Args:
+        fine_tuning_name: The name of the pre-trained model to use for fine-tuning.
+        output_dir: The path to the output directory where the trained model will be saved.
+        epochs: The number of epochs to train the model for.
+        batch_size: The batch size to use for training and evaluation.
+        device: The device to use for training and evaluation.
+        cap_rows: Whether to cap the number of rows in the dataset.
+        cap_rows_train: The maximum number of rows to use for training.
+        cap_rows_test: The maximum number of rows to use for evaluation.
+        run_name: The name of the training run.
+        optim: The optimizer to use for training.
+        grad_acc_steps: The number of gradient accumulation steps to use.
+        grad_chkpt: Whether to use gradient checkpointing.
+        fp16_bool: Whether to use mixed-precision training.
+        lora_layers: The number of LoRA layers to use in the model.
+
+    Returns:
+        A tuple containing a Trainer instance and a pre-trained model.
+    """
+
     logger.info('*****Getting Model and Tokenizer*****')
     model, tokenizer = get_model_for_training(fine_tuning=fine_tuning_name, lora_layers=lora_layers)
     logger.info('*****Getting Dataset*****')
@@ -158,33 +181,9 @@ def get_trainer(fine_tuning_name:str, # change to choice
     eval_steps = int(epochs * len(train_dataset) // batch_size / 4 ) 
     logger.info(f'Calculated eval_steps: {eval_steps}')
 
-    if hasattr(model, "enable_input_require_grads"):
-        logger.info(f"*****Model input require grads enabled*****")
-        model.enable_input_require_grads()
-        
+    enable_input_require_grads(model)
 
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=epochs,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        weight_decay=0.01,
-        learning_rate=5e-5,
-        warmup_ratio=0.1,
-        evaluation_strategy="steps",
-        save_strategy="no",
-        #save_steps=800,
-        eval_steps=eval_steps,
-        save_total_limit=1,
-        use_mps_device= device=='mps',
-        logging_dir=output_dir + '/logs',
-        report_to='wandb',
-        run_name=run_name,
-        optim=optim,
-        gradient_accumulation_steps=grad_acc_steps,
-        gradient_checkpointing=grad_chkpt,
-        fp16=fp16_bool
-        )
+    training_args = get_training_args(output_dir, epochs, batch_size, device, eval_steps, run_name, optim, grad_acc_steps, grad_chkpt, fp16_bool)
 
     trainer = Trainer(
         model=model,
@@ -194,7 +193,18 @@ def get_trainer(fine_tuning_name:str, # change to choice
         compute_metrics=compute_metrics
     )
 
-    return trainer, model
+    return trainer
+
+def enable_input_require_grads(model: PreTrainedModel) -> None:
+    """
+    Enables input gradients for a pre-trained model.
+
+    Args:
+        model: The pre-trained model to enable input gradients for.
+    """
+    if hasattr(model, "enable_input_require_grads"):
+        logger.info(f"*****Model input require grads enabled*****")
+        model.enable_input_require_grads()
 
 def train_save_evaluate(trainer, fine_tuning_name:str, output_dir, model):
     if fine_tuning_name != 'none':
@@ -232,3 +242,53 @@ def get_trainable_parameters(model):
             trainable_params += param.numel()
     
     return f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param:.2f}"
+
+def get_training_args(output_dir: str, 
+                      epochs: int, 
+                      batch_size: int, 
+                      device: str, 
+                      eval_steps: int, 
+                      run_name: str,
+                      optim: str, 
+                      grad_acc_steps: int, 
+                      grad_chkpt: bool, 
+                      fp16_bool: bool) -> TrainingArguments:
+    """
+    Returns a TrainingArguments instance for training a model.
+
+    Args:
+        output_dir: The path to the output directory where the trained model will be saved.
+        epochs: The number of epochs to train the model for.
+        batch_size: The batch size to use for training and evaluation.
+        device: The device to use for training and evaluation.
+        eval_steps: The number of evaluation steps to use during training.
+        run_name: The name of the training run.
+        optim: The optimizer to use for training.
+        grad_acc_steps: The number of gradient accumulation steps to use.
+        grad_chkpt: Whether to use gradient checkpointing.
+        fp16_bool: Whether to use mixed-precision training.
+
+    Returns:
+        A TrainingArguments instance for training a model.
+    """
+    return TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        weight_decay=0.01,
+        learning_rate=5e-5,
+        warmup_ratio=0.1,
+        evaluation_strategy="steps",
+        save_strategy="no",
+        eval_steps=eval_steps,
+        save_total_limit=1,
+        use_mps_device=device == 'mps',
+        logging_dir=f"{output_dir}/logs",
+        report_to='wandb',
+        run_name=run_name,
+        optim=optim,
+        gradient_accumulation_steps=grad_acc_steps,
+        gradient_checkpointing=grad_chkpt,
+        fp16=fp16_bool
+    )
