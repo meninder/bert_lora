@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+.DS_Store
+wandb/
+.claude/
+my_logs.txt
